@@ -2,33 +2,49 @@
 
 This public repository is the publication target for Synkron Shop's Google
 Merchant Center product feed. A scheduled Zoho Flow reads active products from
-Zoho Commerce, generates RSS 2.0 XML, and updates
-[`synkron-google-products.xml`](synkron-google-products.xml) through GitHub's
-Contents API.
+Zoho Commerce in ten bounded batches, stages the generated item fragments, and
+publishes one complete RSS 2.0 XML file.
 
 ```text
 Zoho Flow schedule
-  -> Deluge custom function
-  -> Zoho Commerce Products API
-  -> Google Merchant RSS XML
-  -> GitHub Contents API
-  -> raw.githubusercontent.com
+  -> batch actions 1..10 (one Commerce page each)
+  -> GitHub staging parts
+  -> publisher action
+  -> synkron-google-products.xml
   -> Google Merchant Center
 ```
 
-The repository side of the integration is ready. The account-specific steps in
-Zoho Flow and Google Merchant Center still need to be completed by an account
-administrator.
+Splitting the work keeps every product-processing function to at most 200
+Commerce products. The publisher performs only ten staging reads and one final
+write. It will not overwrite the working feed if a page is missing, belongs to
+another run, is duplicated, or reports that more configured batches are needed.
 
 ## Repository contents
 
-- `synkron-google-products.xml` is the initial, well-formed public feed. The
-  first successful Flow run replaces it with product items.
-- `deluge/generate_synkron_google_feed.dg` is the custom function to paste into
-  Zoho Flow.
-- `scripts/validate_feed.py` validates the generated file without third-party
+- `synkron-google-products.xml` is the public production feed.
+- `deluge/generate_synkron_google_feed_batch.dg` generates and stages one page.
+- `deluge/publish_synkron_google_feed.dg` validates and publishes all staged
+  pages.
+- `scripts/analyze_catalog_export.py` measures an exported Commerce CSV and
+  calculates the required API batch count.
+- `scripts/validate_feed.py` validates the final XML without third-party
   packages.
-- `.github/workflows/validate-feed.yml` validates every feed update.
+- `.github/workflows/validate-feed.yml` validates feed updates.
+
+## Catalog sizing
+
+The local Commerce export can be measured with:
+
+```bash
+python3 scripts/analyze_catalog_export.py "published-items/Item (1).csv"
+```
+
+The current export contains 961 published products, but only 957 are both
+published and active. The Commerce API call uses `Status.Active`, so it must
+page through all 1,918 active products before the function applies storefront
+visibility. At 200 products per response, the current catalog therefore needs
+10 batch actions. The exported CSV is ignored by Git because it contains catalog
+data and is only a local planning input.
 
 ## 1. Create the two Zoho Flow connections
 
@@ -36,14 +52,20 @@ administrator.
 
 In **Zoho Flow -> Settings -> Connections**, create and authorize a Zoho
 Commerce connection using the account that owns the Synkron Shop organization.
-Record its **connection link name** from **View Details**.
+Its connection link name must be:
+
+```text
+synkron_commerce_product_feed
+```
+
+The connection needs the `ZohoCommerce.items.READ` scope.
 
 ### GitHub
 
 1. Create a fine-grained GitHub personal access token for only
    `muchelle-alvin/synkron-google-merchant-feed`.
-2. Grant the token **Repository permissions -> Contents: Read and write** and no
-   unrelated permissions.
+2. Grant **Repository permissions -> Contents: Read and write** and no unrelated
+   permissions.
 3. In **Zoho Flow -> Settings -> Auth Profiles**, create an API-key profile:
 
    | Setting | Value |
@@ -54,72 +76,110 @@ Record its **connection link name** from **View Details**.
    | Test method | `GET` |
    | Test URL | `https://api.github.com/user` |
 
-4. Create a connection from this profile. Enter the value as `Bearer ` followed
-   by one space and the token. Record the connection's **link name**.
-
-Never commit the token or an organization credential to this repository.
-
-## 2. Install the custom function
-
-The checked-in function is configured with these Zoho Flow connection link
-names:
+4. Create a connection from this profile. Enter `Bearer ` followed by one space
+   and the token. Its connection link name must be:
 
 ```text
-synkron_commerce_product_feed
 synkron_github_merchant_feed
 ```
 
-If the connections are renamed in Zoho Flow, update all matching `connection`
-entries in the Deluge source before pasting it into the function editor.
+Never commit the token or an organization credential to this repository.
 
-In the Flow builder, create a custom function named
-`generate_synkron_google_feed` with return type **Map** and these inputs:
+## 2. Install the batch custom function
+
+Create a Zoho Flow custom function named
+`generate_synkron_google_feed_batch`, with return type **Map**, and paste the
+complete contents of `deluge/generate_synkron_google_feed_batch.dg`.
+
+Create these inputs in the same order as the function declaration:
 
 | Parameter | Type | Value |
 | --- | --- | --- |
 | `commerce_api_base` | String | `https://commerce.zoho.com` |
 | `organization_id` | String | Synkron Commerce organization ID |
-| `storefront_domain` | String | Published shop hostname, without `https://` or a trailing slash |
+| `storefront_domain` | String | Published shop hostname, without `https://` or trailing slash |
 | `currency_code` | String | `KES` |
 | `github_owner` | String | `muchelle-alvin` |
 | `github_repo` | String | `synkron-google-merchant-feed` |
 | `github_branch` | String | `main` |
-| `github_path` | String | `synkron-google-products.xml` |
+| `staging_path` | String | `feed-parts/synkron-google-products` |
+| `run_id` | String | Described below |
+| `batch_number` | Number | `1` through `10` |
+| `should_fetch` | Boolean | Described below |
 
-Paste the complete Deluge source into the function editor and save it. The
-Commerce connection needs the `ZohoCommerce.items.READ` scope.
-
-The Commerce organization ID can be read in the logged-in Commerce browser
-console with:
+The organization ID can be read in the logged-in Commerce browser console with:
 
 ```javascript
 app.data.books_org_id
 ```
 
-## 3. Schedule and test the Flow
+The function sends `page=1` through `page=10`, matching Commerce's pagination
+contract, and verifies `page_context.page` before staging the response. This is
+the guard that prevents the previously repeated first page from being
+published.
 
-1. Add a daily schedule trigger for **11:00 PM** in the organization timezone.
-2. Confirm the organization timezone is **Africa/Nairobi (GMT+03:00)**.
-3. Add the custom function after the schedule and supply the values above.
-4. Run **Test & Debug**.
+## 3. Install the publisher custom function
 
-A successful first run returns `status: "success"`. A later run with identical
-catalog data returns `status: "unchanged"`; both are healthy outcomes. The
-function deliberately refuses to overwrite a working feed when it generates
-zero items.
+Create a second custom function named `publish_synkron_google_feed`, with return
+type **Map**, and paste `deluge/publish_synkron_google_feed.dg`.
 
-Then confirm that the raw URL opens without authentication and contains product
-`<item>` elements:
+| Parameter | Type | Value |
+| --- | --- | --- |
+| `storefront_domain` | String | Same hostname used by the batch function |
+| `github_owner` | String | `muchelle-alvin` |
+| `github_repo` | String | `synkron-google-merchant-feed` |
+| `github_branch` | String | `main` |
+| `github_path` | String | `synkron-google-products.xml` |
+| `staging_path` | String | `feed-parts/synkron-google-products` |
+| `run_id` | String | Batch 1's `run_id` output |
+| `batch_count` | Number | `10` |
+
+## 4. Build the batched Flow
+
+1. Add a daily schedule trigger for **11:00 PM**, timezone
+   **Africa/Nairobi (GMT+03:00)**.
+2. Add `generate_synkron_google_feed_batch` as the first action. Set
+   `batch_number` to `1`, `should_fetch` to `true`, and `run_id` to an empty
+   string. Supply the constant values from the table above.
+3. Test that action once so its Map outputs, especially `run_id` and
+   `has_more_page`, are available for mapping.
+4. Clone the batch action nine times and connect all ten actions sequentially.
+5. For action N, set `batch_number` to N. For actions 2 through 10, map:
+   - `run_id` from batch 1's `run_id` output.
+   - `should_fetch` from the immediately preceding action's `has_more_page`
+     output.
+6. Add `publish_synkron_google_feed` after batch 10. Set `batch_count` to `10`
+   and map `run_id` from batch 1.
+7. Run **Test & Debug** for the complete Flow.
+
+Once Commerce reports no next page, later actions do not call Commerce; they
+stage empty parts for the same run. This keeps the fixed ten-action Flow safe
+for smaller catalogs too.
+
+A healthy final publisher response resembles:
+
+```text
+status: success
+batches_published: 10
+products_received: 1918
+items_written: approximately 957 (plus any eligible extra variants)
+feed_url: https://raw.githubusercontent.com/muchelle-alvin/synkron-google-merchant-feed/main/synkron-google-products.xml
+```
+
+The exact item count can differ from the CSV after catalog changes or when one
+product has multiple eligible variants. If any batch returns a status other
+than `success`, the publisher will abort without overwriting the feed; inspect
+that action's returned `requested_page`, `returned_page`, and message.
+
+## 5. Configure Google Merchant Center
+
+Choose **Add products from a file -> Enter a link to your file** and use:
 
 ```text
 https://raw.githubusercontent.com/muchelle-alvin/synkron-google-merchant-feed/main/synkron-google-products.xml
 ```
 
-## 4. Add the source to Google Merchant Center
-
-Choose **Add products from a file -> Enter a link to your file** and use the raw
-URL above. Configure the fetch for daily at **12:00 AM GMT+03:00**, after the
-Flow has run.
+Configure Google's daily fetch for **12:00 AM GMT+03:00**, after Flow runs.
 
 Start with:
 
@@ -130,33 +190,29 @@ Start with:
 | Feed label | `SYNKRON_KE` |
 | Marketing methods | All applicable methods |
 
-Add countries only after shipping, currency, tax, checkout, and delivery are
-configured for them. Review product diagnostics under **Products -> Needs
-attention** after Google's first fetch.
+## Capacity and operation
 
-## Local validation
+Ten batches support up to 2,000 active Commerce products. If the publisher
+returns `more_batches_required`, add more sequential batch actions and increase
+`batch_count`; both functions currently permit up to 20 batches (4,000 active
+products).
 
-The checked-in seed feed intentionally has no items. Validate it with:
+The configuration uses eleven successful Flow actions per scheduled run: ten
+batch actions and one publisher. Fixed staging filenames are overwritten on
+each run, so the repository does not accumulate an unbounded number of files.
+
+Validate locally with:
 
 ```bash
-python3 scripts/validate_feed.py --allow-empty synkron-google-products.xml
+python3 scripts/validate_feed.py synkron-google-products.xml
 python3 -m unittest discover -s tests -v
 ```
 
-To validate a generated production feed and require at least one product, omit
-`--allow-empty`.
-
-## Operational limits
-
-The function fetches at most 10 pages of 200 products. Zoho Flow also imposes
-Deluge statement and execution limits, so catalogs with many products or
-variants may need batching or a move to Zoho Catalyst. The function reports the
-number of written and skipped variants to make that behavior visible.
-
 ## Reference documentation
 
-- [Zoho Commerce: List All Products](https://www.zoho.com/commerce/api/list-all-products.html)
+- [Zoho Commerce: pagination](https://www.zoho.com/commerce/api/pagination.html)
+- [Zoho Commerce: list all products](https://www.zoho.com/commerce/api/list-all-products.html)
+- [Zoho Flow: create a flow](https://help.zoho.com/portal/en/kb/flow/user-guide/create-a-flow/articles/create-a-flow-from-scratch)
 - [Zoho Deluge: `invokeURL`](https://www.zoho.com/deluge/help/webhook/invokeurl-api-task.html)
-- [GitHub: Create or update file contents](https://docs.github.com/en/rest/repos/contents#create-or-update-file-contents)
+- [GitHub: repository contents API](https://docs.github.com/en/rest/repos/contents)
 - [Google Merchant Center: RSS 2.0 specification](https://support.google.com/merchants/answer/14987622?hl=en)
-- [Google Merchant Center: Product data specification](https://support.google.com/merchants/answer/7052112?hl=en)

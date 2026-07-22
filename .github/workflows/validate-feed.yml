@@ -4,14 +4,16 @@ on:
   push:
     paths:
       - synkron-google-products.xml
-      - scripts/validate_feed.py
-      - tests/test_validate_feed.py
+      - "deluge/**"
+      - "scripts/**"
+      - "tests/**"
       - .github/workflows/validate-feed.yml
   pull_request:
     paths:
       - synkron-google-products.xml
-      - scripts/validate_feed.py
-      - tests/test_validate_feed.py
+      - "deluge/**"
+      - "scripts/**"
+      - "tests/**"
       - .github/workflows/validate-feed.yml
 
 permissions:

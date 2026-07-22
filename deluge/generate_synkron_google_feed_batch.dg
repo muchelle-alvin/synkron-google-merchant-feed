@@ -1,12 +1,14 @@
-map generate_synkron_google_feed(string commerce_api_base, string organization_id, string storefront_domain, string currency_code, string github_owner, string github_repo, string github_branch, string github_path)
+map generate_synkron_google_feed_batch(string commerce_api_base, string organization_id, string storefront_domain, string currency_code, string github_owner, string github_repo, string github_branch, string staging_path, string run_id, int batch_number, bool should_fetch)
 {
 	result = Map();
 	item_count = 0;
 	skipped_count = 0;
 	duplicate_count = 0;
-	pages_fetched = 0;
+	products_received = 0;
+	has_more_page = false;
+	page_marker = "";
 	seen_offer_ids = Map();
-	seen_page_markers = Map();
+	offer_ids = List();
 
 	commerce_api_base = commerce_api_base.trim();
 	organization_id = organization_id.trim();
@@ -15,12 +17,23 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 	github_owner = github_owner.trim();
 	github_repo = github_repo.trim();
 	github_branch = github_branch.trim();
-	github_path = github_path.trim();
+	staging_path = staging_path.trim();
+	run_id = run_id.trim();
 
-	if(commerce_api_base == "" || organization_id == "" || storefront_domain == "" || currency_code == "" || github_owner == "" || github_repo == "" || github_branch == "" || github_path == "")
+	if(run_id == "")
+	{
+		run_id = zoho.currenttime.toString("yyyyMMddHHmmss");
+	}
+
+	run_id = run_id.replaceAll("[^A-Za-z0-9_-]","",false);
+	result.put("run_id",run_id);
+	result.put("batch_number",batch_number);
+	result.put("has_more_page",false);
+
+	if(commerce_api_base == "" || organization_id == "" || storefront_domain == "" || currency_code == "" || github_owner == "" || github_repo == "" || github_branch == "" || staging_path == "" || run_id == "")
 	{
 		result.put("status","invalid_input");
-		result.put("message","All function inputs are required.");
+		result.put("message","All function inputs are required, except run_id on batch 1.");
 		return result;
 	}
 
@@ -31,45 +44,35 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 		return result;
 	}
 
-	if(currency_code.length() != 3)
+	if(currency_code.length() != 3 || batch_number < 1 || batch_number > 20)
 	{
 		result.put("status","invalid_input");
-		result.put("message","currency_code must be a three-letter ISO 4217 code.");
+		result.put("message","currency_code must contain three letters and batch_number must be between 1 and 20.");
 		return result;
 	}
 
-	/* Deluge treats \n as two literal characters, so construct real line feeds. */
 	line_feed = hexToText("0A");
 	carriage_return = hexToText("0D");
-	xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" + line_feed;
-	xml = xml + "<rss xmlns:g=\"http://base.google.com/ns/1.0\" version=\"2.0\">" + line_feed;
-	xml = xml + "  <channel>" + line_feed;
-	xml = xml + "    <title>Synkron Shop Google Product Feed</title>" + line_feed;
-	xml = xml + "    <link>https://" + storefront_domain.xmlEncode() + "/</link>" + line_feed;
-	xml = xml + "    <description>Google Merchant Center product feed for Synkron Shop</description>" + line_feed;
+	items_xml = "";
+	batch_size = 200;
+	requested_page = batch_number;
 
-	/*
-	 * Zoho Commerce supports up to 200 products per page. This Flow version
-	 * intentionally caps processing at 10 pages to bound its execution time.
-	 */
-	page_numbers = {1,2,3,4,5,6,7,8,9,10};
-
-	for each page_number in page_numbers
+	if(should_fetch == true)
 	{
 		commerce_headers = Map();
 		commerce_headers.put("X-com-zoho-store-organizationid",organization_id);
 
-		products_url = commerce_api_base + "/store/api/v1/products";
 		commerce_parameters = Map();
 		commerce_parameters.put("filter_by","Status.Active");
 		commerce_parameters.put("sort_column","name");
 		commerce_parameters.put("sort_order","A");
-		commerce_parameters.put("page_start_from",page_number);
-		commerce_parameters.put("per_page",200);
+		/* The Commerce pagination endpoint uses a 1-based page number. */
+		commerce_parameters.put("page",requested_page);
+		commerce_parameters.put("per_page",batch_size);
 
 		products_response = invokeurl
 		[
-			url : products_url
+			url : commerce_api_base + "/store/api/v1/products"
 			type : GET
 			parameters : commerce_parameters
 			headers : commerce_headers
@@ -79,32 +82,18 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 		if(products_response == null || ifNull(products_response.get("code"),-1) != 0)
 		{
 			result.put("status","commerce_api_failed");
-			result.put("page",page_number);
+			result.put("requested_page",requested_page);
 			result.put("response",products_response);
 			return result;
 		}
 
-		pages_fetched = page_number;
 		products = products_response.get("products");
 
 		if(products != null && products.isEmpty() == false)
 		{
+			products_received = products.size();
 			first_product = products.get(0);
 			page_marker = ifNull(first_product.get("product_id"),"").toString();
-
-			if(page_marker != "" && seen_page_markers.containKey(page_marker))
-			{
-				result.put("status","commerce_pagination_failed");
-				result.put("page",page_number);
-				result.put("page_marker",page_marker);
-				result.put("message","Zoho Commerce returned a previously fetched page. The existing GitHub feed was not overwritten.");
-				return result;
-			}
-
-			if(page_marker != "")
-			{
-				seen_page_markers.put(page_marker,true);
-			}
 
 			for each product in products
 			{
@@ -145,7 +134,6 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 					description = product_name;
 				}
 
-				/* Remove markup, decode HTML entities, and normalize whitespace. */
 				description = description.replaceAll("<[^>]*>"," ",false).htmlDecode().trim();
 				description = description.replaceAll(line_feed," ",true).replaceAll(carriage_return," ",true);
 				description = description.replaceAll(hexToText("09")," ",true).replaceAll(" +"," ",false).trim();
@@ -157,7 +145,6 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 
 				product_link = "https://" + storefront_domain + "/products/" + product_handle + "/" + product_id;
 				image_link = "https://" + storefront_domain + "/product-images/" + document_id;
-
 				brand = ifNull(product.get("brand"),"").toString().trim();
 
 				if(brand == "")
@@ -181,16 +168,9 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 				for each variant in variants
 				{
 					variant_status = ifNull(variant.get("status"),"").toString();
-
-					if(variant_status != "active")
-					{
-						skipped_count = skipped_count + 1;
-						continue;
-					}
-
 					rate_text = ifNull(variant.get("rate"),"").toString().trim();
 
-					if(rate_text == "")
+					if(variant_status != "active" || rate_text == "")
 					{
 						skipped_count = skipped_count + 1;
 						continue;
@@ -225,7 +205,7 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 					}
 
 					seen_offer_ids.put(offer_id,true);
-
+					offer_ids.add(offer_id);
 					offer_title = product_name;
 					option_1 = ifNull(variant.get("attribute_option_name1"),"").toString().trim();
 					option_2 = ifNull(variant.get("attribute_option_name2"),"").toString().trim();
@@ -302,51 +282,42 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 						mpn = mpn.left(70);
 					}
 
-					xml = xml + "    <item>" + line_feed;
-					xml = xml + "      <g:id>" + offer_id.xmlEncode() + "</g:id>" + line_feed;
-					xml = xml + "      <g:title>" + offer_title.xmlEncode() + "</g:title>" + line_feed;
-					xml = xml + "      <g:description>" + description.xmlEncode() + "</g:description>" + line_feed;
-					xml = xml + "      <g:link>" + product_link.xmlEncode() + "</g:link>" + line_feed;
-					xml = xml + "      <g:image_link>" + image_link.xmlEncode() + "</g:image_link>" + line_feed;
-					xml = xml + "      <g:availability>" + availability + "</g:availability>" + line_feed;
-					xml = xml + "      <g:condition>new</g:condition>" + line_feed;
-					xml = xml + "      <g:price>" + normal_price + " " + currency_code + "</g:price>" + line_feed;
+					item_xml = "    <item>" + line_feed + "      <g:id>" + offer_id.xmlEncode() + "</g:id>" + line_feed + "      <g:title>" + offer_title.xmlEncode() + "</g:title>" + line_feed + "      <g:description>" + description.xmlEncode() + "</g:description>" + line_feed + "      <g:link>" + product_link.xmlEncode() + "</g:link>" + line_feed + "      <g:image_link>" + image_link.xmlEncode() + "</g:image_link>" + line_feed + "      <g:availability>" + availability + "</g:availability>" + line_feed + "      <g:condition>new</g:condition>" + line_feed + "      <g:price>" + normal_price + " " + currency_code + "</g:price>" + line_feed;
 
 					if(sale_price > 0)
 					{
-						xml = xml + "      <g:sale_price>" + sale_price + " " + currency_code + "</g:sale_price>" + line_feed;
+						item_xml = item_xml + "      <g:sale_price>" + sale_price + " " + currency_code + "</g:sale_price>" + line_feed;
 					}
 
 					if(ifNull(product.get("has_variant"),false) == true)
 					{
-						xml = xml + "      <g:item_group_id>" + product_id.xmlEncode() + "</g:item_group_id>" + line_feed;
+						item_xml = item_xml + "      <g:item_group_id>" + product_id.xmlEncode() + "</g:item_group_id>" + line_feed;
 					}
 
 					if(brand != "")
 					{
-						xml = xml + "      <g:brand>" + brand.xmlEncode() + "</g:brand>" + line_feed;
+						item_xml = item_xml + "      <g:brand>" + brand.xmlEncode() + "</g:brand>" + line_feed;
 					}
 
 					if(gtin != "")
 					{
-						xml = xml + "      <g:gtin>" + gtin.xmlEncode() + "</g:gtin>" + line_feed;
+						item_xml = item_xml + "      <g:gtin>" + gtin.xmlEncode() + "</g:gtin>" + line_feed;
 					}
 
 					if(mpn != "")
 					{
-						xml = xml + "      <g:mpn>" + mpn.xmlEncode() + "</g:mpn>" + line_feed;
+						item_xml = item_xml + "      <g:mpn>" + mpn.xmlEncode() + "</g:mpn>" + line_feed;
 					}
 
 					if(brand == "" && gtin == "" && mpn == "")
 					{
-						xml = xml + "      <g:identifier_exists>no</g:identifier_exists>" + line_feed;
+						item_xml = item_xml + "      <g:identifier_exists>no</g:identifier_exists>" + line_feed;
 					}
 
 					attribute_names = List();
 					attribute_names.add(ifNull(variant.get("attribute_name1"),"").toString());
 					attribute_names.add(ifNull(variant.get("attribute_name2"),"").toString());
 					attribute_names.add(ifNull(variant.get("attribute_name3"),"").toString());
-
 					attribute_values = List();
 					attribute_values.add(option_1);
 					attribute_values.add(option_2);
@@ -357,21 +328,18 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 						attribute_name = attribute_names.get(attribute_index).toLowerCase().trim();
 						attribute_value = attribute_values.get(attribute_index).trim();
 
-						if(attribute_value != "")
+						if(attribute_value != "" && (attribute_name.contains("color") || attribute_name.contains("colour")))
 						{
-							if(attribute_name.contains("color") || attribute_name.contains("colour"))
-							{
-								xml = xml + "      <g:color>" + attribute_value.xmlEncode() + "</g:color>" + line_feed;
-							}
+							item_xml = item_xml + "      <g:color>" + attribute_value.xmlEncode() + "</g:color>" + line_feed;
+						}
 
-							if(attribute_name.contains("size"))
-							{
-								xml = xml + "      <g:size>" + attribute_value.xmlEncode() + "</g:size>" + line_feed;
-							}
+						if(attribute_value != "" && attribute_name.contains("size"))
+						{
+							item_xml = item_xml + "      <g:size>" + attribute_value.xmlEncode() + "</g:size>" + line_feed;
 						}
 					}
 
-					xml = xml + "    </item>" + line_feed;
+					items_xml = items_xml + item_xml + "    </item>" + line_feed;
 					item_count = item_count + 1;
 				}
 			}
@@ -379,28 +347,47 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 
 		page_context = products_response.get("page_context");
 
-		if(page_context == null || ifNull(page_context.get("has_more_page"),false) != true)
+		if(page_context == null)
 		{
-			break;
+			result.put("status","commerce_pagination_failed");
+			result.put("requested_page",requested_page);
+			result.put("message","Zoho Commerce did not return page_context. The existing feed was not overwritten.");
+			return result;
+		}
+
+		returned_page = ifNull(page_context.get("page"),0).toLong();
+
+		if(returned_page != requested_page)
+		{
+			result.put("status","commerce_pagination_failed");
+			result.put("requested_page",requested_page);
+			result.put("returned_page",returned_page);
+			result.put("message","Zoho Commerce returned a different page. The existing feed was not overwritten.");
+			return result;
+		}
+
+		if(ifNull(page_context.get("has_more_page"),false).toString().toLowerCase() == "true")
+		{
+			has_more_page = true;
 		}
 	}
 
-	xml = xml + "  </channel>" + line_feed;
-	xml = xml + "</rss>" + line_feed;
+	batch_document = Map();
+	batch_document.put("schema_version",1);
+	batch_document.put("run_id",run_id);
+	batch_document.put("batch_number",batch_number);
+	batch_document.put("requested_page",requested_page);
+	batch_document.put("products_received",products_received);
+	batch_document.put("items_written",item_count);
+	batch_document.put("items_skipped",skipped_count);
+	batch_document.put("duplicates_skipped",duplicate_count);
+	batch_document.put("has_more_page",has_more_page);
+	batch_document.put("page_marker",page_marker);
+	batch_document.put("offer_ids",offer_ids);
+	batch_document.put("items_base64",zoho.encryption.base64Encode(items_xml,"UTF-8"));
 
-	if(item_count == 0)
-	{
-		result.put("status","no_items_generated");
-		result.put("items_skipped",skipped_count);
-		result.put("duplicates_skipped",duplicate_count);
-		result.put("pages_fetched",pages_fetched);
-		result.put("message","The existing GitHub feed was not overwritten.");
-		return result;
-	}
-
-	github_api_url = "https://api.github.com/repos/" + github_owner + "/" + github_repo + "/contents/" + github_path;
-	feed_url = "https://raw.githubusercontent.com/" + github_owner + "/" + github_repo + "/" + github_branch + "/" + github_path;
-
+	batch_path = staging_path + "-part-" + batch_number + ".json";
+	github_api_url = "https://api.github.com/repos/" + github_owner + "/" + github_repo + "/contents/" + batch_path;
 	github_headers = Map();
 	github_headers.put("Accept","application/vnd.github+json");
 	github_headers.put("X-GitHub-Api-Version","2026-03-10");
@@ -414,31 +401,15 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 	];
 
 	existing_sha = "";
-	existing_content = "";
 
 	if(existing_file != null)
 	{
 		existing_sha = ifNull(existing_file.get("sha"),"").toString();
-		existing_content = ifNull(existing_file.get("content"),"").toString();
-	}
-
-	existing_content = existing_content.replaceAll(line_feed,"",true).replaceAll(carriage_return,"",true);
-	encoded_xml = zoho.encryption.base64Encode(xml,"UTF-8");
-
-	if(existing_sha != "" && existing_content == encoded_xml)
-	{
-		result.put("status","unchanged");
-		result.put("items_written",item_count);
-		result.put("items_skipped",skipped_count);
-		result.put("duplicates_skipped",duplicate_count);
-		result.put("pages_fetched",pages_fetched);
-		result.put("feed_url",feed_url);
-		return result;
 	}
 
 	github_payload = Map();
-	github_payload.put("message","Update Synkron Shop Google Merchant feed");
-	github_payload.put("content",encoded_xml);
+	github_payload.put("message","Stage Synkron Merchant feed batch " + batch_number);
+	github_payload.put("content",zoho.encryption.base64Encode(batch_document.toString(),"UTF-8"));
 	github_payload.put("branch",github_branch);
 
 	if(existing_sha != "")
@@ -447,7 +418,6 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 	}
 
 	github_headers.put("Content-Type","application/json");
-
 	publish_response = invokeurl
 	[
 		url : github_api_url
@@ -462,18 +432,20 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 
 	if(response_code != 200 && response_code != 201)
 	{
-		result.put("status","github_publish_failed");
+		result.put("status","github_stage_failed");
 		result.put("response_code",response_code);
 		result.put("github_response",publish_response);
 		return result;
 	}
 
 	result.put("status","success");
+	result.put("has_more_page",has_more_page);
+	result.put("requested_page",requested_page);
+	result.put("products_received",products_received);
 	result.put("items_written",item_count);
 	result.put("items_skipped",skipped_count);
 	result.put("duplicates_skipped",duplicate_count);
-	result.put("pages_fetched",pages_fetched);
-	result.put("feed_url",feed_url);
+	result.put("part_path",batch_path);
 	result.put("github_response_code",response_code);
 	return result;
 }
