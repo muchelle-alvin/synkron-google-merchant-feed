@@ -3,6 +3,10 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 	result = Map();
 	item_count = 0;
 	skipped_count = 0;
+	duplicate_count = 0;
+	pages_fetched = 0;
+	seen_offer_ids = Map();
+	seen_page_markers = Map();
 
 	commerce_api_base = commerce_api_base.trim();
 	organization_id = organization_id.trim();
@@ -56,18 +60,18 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 		commerce_headers.put("X-com-zoho-store-organizationid",organization_id);
 
 		products_url = commerce_api_base + "/store/api/v1/products";
-		products_url = products_url + "?filter_by=Status.Active";
-		products_url = products_url + "&sort_column=name";
-		products_url = products_url + "&sort_order=A";
-		/* page_start_from is a record offset, not a page number. */
-		page_start_from = ((page_number - 1) * 200) + 1;
-		products_url = products_url + "&page_start_from=" + page_start_from;
-		products_url = products_url + "&per_page=200";
+		commerce_parameters = Map();
+		commerce_parameters.put("filter_by","Status.Active");
+		commerce_parameters.put("sort_column","name");
+		commerce_parameters.put("sort_order","A");
+		commerce_parameters.put("page_start_from",page_number);
+		commerce_parameters.put("per_page",200);
 
 		products_response = invokeurl
 		[
 			url : products_url
 			type : GET
+			parameters : commerce_parameters
 			headers : commerce_headers
 			connection : "synkron_commerce_product_feed"
 		];
@@ -80,10 +84,28 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 			return result;
 		}
 
+		pages_fetched = page_number;
 		products = products_response.get("products");
 
-		if(products != null)
+		if(products != null && products.isEmpty() == false)
 		{
+			first_product = products.get(0);
+			page_marker = ifNull(first_product.get("product_id"),"").toString();
+
+			if(page_marker != "" && seen_page_markers.containKey(page_marker))
+			{
+				result.put("status","commerce_pagination_failed");
+				result.put("page",page_number);
+				result.put("page_marker",page_marker);
+				result.put("message","Zoho Commerce returned a previously fetched page. The existing GitHub feed was not overwritten.");
+				return result;
+			}
+
+			if(page_marker != "")
+			{
+				seen_page_markers.put(page_marker,true);
+			}
+
 			for each product in products
 			{
 				product_status = ifNull(product.get("status"),"").toString();
@@ -194,6 +216,15 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 						skipped_count = skipped_count + 1;
 						continue;
 					}
+
+					if(seen_offer_ids.containKey(offer_id))
+					{
+						duplicate_count = duplicate_count + 1;
+						skipped_count = skipped_count + 1;
+						continue;
+					}
+
+					seen_offer_ids.put(offer_id,true);
 
 					offer_title = product_name;
 					option_1 = ifNull(variant.get("attribute_option_name1"),"").toString().trim();
@@ -361,6 +392,8 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 	{
 		result.put("status","no_items_generated");
 		result.put("items_skipped",skipped_count);
+		result.put("duplicates_skipped",duplicate_count);
+		result.put("pages_fetched",pages_fetched);
 		result.put("message","The existing GitHub feed was not overwritten.");
 		return result;
 	}
@@ -397,6 +430,8 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 		result.put("status","unchanged");
 		result.put("items_written",item_count);
 		result.put("items_skipped",skipped_count);
+		result.put("duplicates_skipped",duplicate_count);
+		result.put("pages_fetched",pages_fetched);
 		result.put("feed_url",feed_url);
 		return result;
 	}
@@ -436,6 +471,8 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 	result.put("status","success");
 	result.put("items_written",item_count);
 	result.put("items_skipped",skipped_count);
+	result.put("duplicates_skipped",duplicate_count);
+	result.put("pages_fetched",pages_fetched);
 	result.put("feed_url",feed_url);
 	result.put("github_response_code",response_code);
 	return result;
