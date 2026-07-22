@@ -1,0 +1,29 @@
+name: Validate Google Merchant feed
+
+on:
+  push:
+    paths:
+      - synkron-google-products.xml
+      - scripts/validate_feed.py
+      - tests/test_validate_feed.py
+      - .github/workflows/validate-feed.yml
+  pull_request:
+    paths:
+      - synkron-google-products.xml
+      - scripts/validate_feed.py
+      - tests/test_validate_feed.py
+      - .github/workflows/validate-feed.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Run validator tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Validate feed
+        run: python3 scripts/validate_feed.py --allow-empty synkron-google-products.xml

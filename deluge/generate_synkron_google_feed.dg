@@ -1,0 +1,435 @@
+map generate_synkron_google_feed(string commerce_api_base, string organization_id, string storefront_domain, string currency_code, string github_owner, string github_repo, string github_branch, string github_path)
+{
+	result = Map();
+	item_count = 0;
+	skipped_count = 0;
+
+	commerce_api_base = commerce_api_base.trim();
+	organization_id = organization_id.trim();
+	storefront_domain = storefront_domain.trim();
+	currency_code = currency_code.trim().toUpperCase();
+	github_owner = github_owner.trim();
+	github_repo = github_repo.trim();
+	github_branch = github_branch.trim();
+	github_path = github_path.trim();
+
+	if(commerce_api_base == "" || organization_id == "" || storefront_domain == "" || currency_code == "" || github_owner == "" || github_repo == "" || github_branch == "" || github_path == "")
+	{
+		result.put("status","invalid_input");
+		result.put("message","All function inputs are required.");
+		return result;
+	}
+
+	if(storefront_domain.contains("://") || storefront_domain.endsWith("/"))
+	{
+		result.put("status","invalid_input");
+		result.put("message","storefront_domain must be a hostname without a scheme or trailing slash.");
+		return result;
+	}
+
+	if(currency_code.length() != 3)
+	{
+		result.put("status","invalid_input");
+		result.put("message","currency_code must be a three-letter ISO 4217 code.");
+		return result;
+	}
+
+	xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+	xml = xml + "<rss xmlns:g=\"http://base.google.com/ns/1.0\" version=\"2.0\">\n";
+	xml = xml + "  <channel>\n";
+	xml = xml + "    <title>Synkron Shop Google Product Feed</title>\n";
+	xml = xml + "    <link>https://" + storefront_domain.xmlEncode() + "/</link>\n";
+	xml = xml + "    <description>Google Merchant Center product feed for Synkron Shop</description>\n";
+
+	/*
+	 * Zoho Commerce supports up to 200 products per page. This Flow version
+	 * intentionally caps processing at 10 pages to bound its execution time.
+	 */
+	page_numbers = {1,2,3,4,5,6,7,8,9,10};
+
+	for each page_number in page_numbers
+	{
+		commerce_headers = Map();
+		commerce_headers.put("X-com-zoho-store-organizationid",organization_id);
+
+		products_url = commerce_api_base + "/store/api/v1/products";
+		products_url = products_url + "?filter_by=Status.Active";
+		products_url = products_url + "&sort_column=name";
+		products_url = products_url + "&sort_order=A";
+		products_url = products_url + "&page_start_from=" + page_number;
+		products_url = products_url + "&per_page=200";
+
+		products_response = invokeurl
+		[
+			url : products_url
+			type : GET
+			headers : commerce_headers
+			connection : "REPLACE_WITH_ZOHO_COMMERCE_CONNECTION_LINK_NAME"
+		];
+
+		if(products_response == null || ifNull(products_response.get("code"),-1) != 0)
+		{
+			result.put("status","commerce_api_failed");
+			result.put("page",page_number);
+			result.put("response",products_response);
+			return result;
+		}
+
+		products = products_response.get("products");
+
+		if(products != null)
+		{
+			for each product in products
+			{
+				product_status = ifNull(product.get("status"),"").toString();
+				show_in_storefront = ifNull(product.get("show_in_storefront"),false);
+
+				if(product_status != "active" || show_in_storefront != true)
+				{
+					skipped_count = skipped_count + 1;
+					continue;
+				}
+
+				product_id = ifNull(product.get("product_id"),"").toString().trim();
+				product_name = ifNull(product.get("name"),"").toString().trim();
+				product_handle = ifNull(product.get("url"),"").toString().trim();
+				document_id = ifNull(product.get("document_id"),"").toString().trim();
+
+				if(product_id == "" || product_name == "" || product_handle == "" || document_id == "")
+				{
+					skipped_count = skipped_count + 1;
+					continue;
+				}
+
+				description = ifNull(product.get("product_short_description"),"").toString().trim();
+
+				if(description == "")
+				{
+					description = ifNull(product.get("product_description"),"").toString().trim();
+				}
+
+				if(description == "")
+				{
+					description = ifNull(product.get("description"),"").toString().trim();
+				}
+
+				if(description == "")
+				{
+					description = product_name;
+				}
+
+				/* Remove markup, decode HTML entities, and enforce Google's limit. */
+				description = description.replaceAll("<[^>]*>"," ",false).htmlDecode().trim();
+
+				if(description.length() > 5000)
+				{
+					description = description.left(5000);
+				}
+
+				product_link = "https://" + storefront_domain + "/products/" + product_handle + "/" + product_id;
+				image_link = "https://" + storefront_domain + "/product-images/" + document_id;
+
+				brand = ifNull(product.get("brand"),"").toString().trim();
+
+				if(brand == "")
+				{
+					brand = ifNull(product.get("manufacturer"),"").toString().trim();
+				}
+
+				if(brand.length() > 70)
+				{
+					brand = brand.left(70);
+				}
+
+				variants = product.get("variants");
+
+				if(variants == null || variants.isEmpty())
+				{
+					skipped_count = skipped_count + 1;
+					continue;
+				}
+
+				for each variant in variants
+				{
+					variant_status = ifNull(variant.get("status"),"").toString();
+
+					if(variant_status != "active")
+					{
+						skipped_count = skipped_count + 1;
+						continue;
+					}
+
+					rate_text = ifNull(variant.get("rate"),"").toString().trim();
+
+					if(rate_text == "")
+					{
+						skipped_count = skipped_count + 1;
+						continue;
+					}
+
+					rate = rate_text.toDecimal();
+
+					if(rate <= 0)
+					{
+						skipped_count = skipped_count + 1;
+						continue;
+					}
+
+					offer_id = ifNull(variant.get("sku"),"").toString().trim();
+
+					if(offer_id == "" || offer_id.length() > 50)
+					{
+						offer_id = ifNull(variant.get("variant_id"),"").toString().trim();
+					}
+
+					if(offer_id == "" || offer_id.length() > 50)
+					{
+						skipped_count = skipped_count + 1;
+						continue;
+					}
+
+					offer_title = product_name;
+					option_1 = ifNull(variant.get("attribute_option_name1"),"").toString().trim();
+					option_2 = ifNull(variant.get("attribute_option_name2"),"").toString().trim();
+					option_3 = ifNull(variant.get("attribute_option_name3"),"").toString().trim();
+
+					if(option_1 != "")
+					{
+						offer_title = offer_title + " - " + option_1;
+					}
+
+					if(option_2 != "")
+					{
+						offer_title = offer_title + " - " + option_2;
+					}
+
+					if(option_3 != "")
+					{
+						offer_title = offer_title + " - " + option_3;
+					}
+
+					if(offer_title.length() > 150)
+					{
+						offer_title = offer_title.left(150);
+					}
+
+					availability = "in_stock";
+					variant_type = ifNull(variant.get("variant_type"),ifNull(product.get("variant_type"),"")).toString();
+					available_sale_stock_text = ifNull(variant.get("available_sale_stock"),"0").toString().trim();
+					available_sale_stock = 0;
+
+					if(available_sale_stock_text != "")
+					{
+						available_sale_stock = available_sale_stock_text.toDecimal();
+					}
+
+					if(variant_type == "inventory" && available_sale_stock <= 0)
+					{
+						availability = "out_of_stock";
+					}
+
+					label_rate_text = ifNull(variant.get("label_rate"),"0").toString().trim();
+					label_rate = 0;
+
+					if(label_rate_text != "")
+					{
+						label_rate = label_rate_text.toDecimal();
+					}
+
+					normal_price = rate;
+					sale_price = 0;
+
+					if(label_rate > rate && label_rate > 0)
+					{
+						normal_price = label_rate;
+						sale_price = rate;
+					}
+
+					gtin = ifNull(variant.get("ean"),"").toString().trim();
+
+					if(gtin == "")
+					{
+						gtin = ifNull(variant.get("upc"),"").toString().trim();
+					}
+
+					if(gtin == "")
+					{
+						gtin = ifNull(variant.get("isbn"),"").toString().trim();
+					}
+
+					mpn = ifNull(variant.get("part_number"),"").toString().trim();
+
+					if(mpn.length() > 70)
+					{
+						mpn = mpn.left(70);
+					}
+
+					xml = xml + "    <item>\n";
+					xml = xml + "      <g:id>" + offer_id.xmlEncode() + "</g:id>\n";
+					xml = xml + "      <g:title>" + offer_title.xmlEncode() + "</g:title>\n";
+					xml = xml + "      <g:description>" + description.xmlEncode() + "</g:description>\n";
+					xml = xml + "      <g:link>" + product_link.xmlEncode() + "</g:link>\n";
+					xml = xml + "      <g:image_link>" + image_link.xmlEncode() + "</g:image_link>\n";
+					xml = xml + "      <g:availability>" + availability + "</g:availability>\n";
+					xml = xml + "      <g:condition>new</g:condition>\n";
+					xml = xml + "      <g:price>" + normal_price + " " + currency_code + "</g:price>\n";
+
+					if(sale_price > 0)
+					{
+						xml = xml + "      <g:sale_price>" + sale_price + " " + currency_code + "</g:sale_price>\n";
+					}
+
+					if(ifNull(product.get("has_variant"),false) == true)
+					{
+						xml = xml + "      <g:item_group_id>" + product_id.xmlEncode() + "</g:item_group_id>\n";
+					}
+
+					if(brand != "")
+					{
+						xml = xml + "      <g:brand>" + brand.xmlEncode() + "</g:brand>\n";
+					}
+
+					if(gtin != "")
+					{
+						xml = xml + "      <g:gtin>" + gtin.xmlEncode() + "</g:gtin>\n";
+					}
+
+					if(mpn != "")
+					{
+						xml = xml + "      <g:mpn>" + mpn.xmlEncode() + "</g:mpn>\n";
+					}
+
+					if(brand == "" && gtin == "" && mpn == "")
+					{
+						xml = xml + "      <g:identifier_exists>no</g:identifier_exists>\n";
+					}
+
+					attribute_names = List();
+					attribute_names.add(ifNull(variant.get("attribute_name1"),"").toString());
+					attribute_names.add(ifNull(variant.get("attribute_name2"),"").toString());
+					attribute_names.add(ifNull(variant.get("attribute_name3"),"").toString());
+
+					attribute_values = List();
+					attribute_values.add(option_1);
+					attribute_values.add(option_2);
+					attribute_values.add(option_3);
+
+					for each index attribute_index in attribute_names
+					{
+						attribute_name = attribute_names.get(attribute_index).toLowerCase().trim();
+						attribute_value = attribute_values.get(attribute_index).trim();
+
+						if(attribute_value != "")
+						{
+							if(attribute_name.contains("color") || attribute_name.contains("colour"))
+							{
+								xml = xml + "      <g:color>" + attribute_value.xmlEncode() + "</g:color>\n";
+							}
+
+							if(attribute_name.contains("size"))
+							{
+								xml = xml + "      <g:size>" + attribute_value.xmlEncode() + "</g:size>\n";
+							}
+						}
+					}
+
+					xml = xml + "    </item>\n";
+					item_count = item_count + 1;
+				}
+			}
+		}
+
+		page_context = products_response.get("page_context");
+
+		if(page_context == null || ifNull(page_context.get("has_more_page"),false) != true)
+		{
+			break;
+		}
+	}
+
+	xml = xml + "  </channel>\n";
+	xml = xml + "</rss>\n";
+
+	if(item_count == 0)
+	{
+		result.put("status","no_items_generated");
+		result.put("items_skipped",skipped_count);
+		result.put("message","The existing GitHub feed was not overwritten.");
+		return result;
+	}
+
+	github_api_url = "https://api.github.com/repos/" + github_owner + "/" + github_repo + "/contents/" + github_path;
+	feed_url = "https://raw.githubusercontent.com/" + github_owner + "/" + github_repo + "/" + github_branch + "/" + github_path;
+
+	github_headers = Map();
+	github_headers.put("Accept","application/vnd.github+json");
+	github_headers.put("X-GitHub-Api-Version","2026-03-10");
+
+	existing_file = invokeurl
+	[
+		url : github_api_url + "?ref=" + github_branch
+		type : GET
+		headers : github_headers
+		connection : "REPLACE_WITH_GITHUB_CONNECTION_LINK_NAME"
+	];
+
+	existing_sha = "";
+	existing_content = "";
+
+	if(existing_file != null)
+	{
+		existing_sha = ifNull(existing_file.get("sha"),"").toString();
+		existing_content = ifNull(existing_file.get("content"),"").toString();
+	}
+
+	existing_content = existing_content.replaceAll("\n","",true).replaceAll("\r","",true);
+	encoded_xml = zoho.encryption.base64Encode(xml,"UTF-8");
+
+	if(existing_sha != "" && existing_content == encoded_xml)
+	{
+		result.put("status","unchanged");
+		result.put("items_written",item_count);
+		result.put("items_skipped",skipped_count);
+		result.put("feed_url",feed_url);
+		return result;
+	}
+
+	github_payload = Map();
+	github_payload.put("message","Update Synkron Shop Google Merchant feed");
+	github_payload.put("content",encoded_xml);
+	github_payload.put("branch",github_branch);
+
+	if(existing_sha != "")
+	{
+		github_payload.put("sha",existing_sha);
+	}
+
+	github_headers.put("Content-Type","application/json");
+
+	publish_response = invokeurl
+	[
+		url : github_api_url
+		type : PUT
+		headers : github_headers
+		body : github_payload.toString()
+		connection : "REPLACE_WITH_GITHUB_CONNECTION_LINK_NAME"
+		detailed : true
+	];
+
+	response_code = ifNull(publish_response.get("responseCode"),0);
+
+	if(response_code != 200 && response_code != 201)
+	{
+		result.put("status","github_publish_failed");
+		result.put("response_code",response_code);
+		result.put("github_response",publish_response);
+		return result;
+	}
+
+	result.put("status","success");
+	result.put("items_written",item_count);
+	result.put("items_skipped",skipped_count);
+	result.put("feed_url",feed_url);
+	result.put("github_response_code",response_code);
+	return result;
+}
