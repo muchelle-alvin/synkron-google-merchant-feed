@@ -34,12 +34,15 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 		return result;
 	}
 
-	xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
-	xml = xml + "<rss xmlns:g=\"http://base.google.com/ns/1.0\" version=\"2.0\">\n";
-	xml = xml + "  <channel>\n";
-	xml = xml + "    <title>Synkron Shop Google Product Feed</title>\n";
-	xml = xml + "    <link>https://" + storefront_domain.xmlEncode() + "/</link>\n";
-	xml = xml + "    <description>Google Merchant Center product feed for Synkron Shop</description>\n";
+	/* Deluge treats \n as two literal characters, so construct real line feeds. */
+	line_feed = hexToText("0A");
+	carriage_return = hexToText("0D");
+	xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" + line_feed;
+	xml = xml + "<rss xmlns:g=\"http://base.google.com/ns/1.0\" version=\"2.0\">" + line_feed;
+	xml = xml + "  <channel>" + line_feed;
+	xml = xml + "    <title>Synkron Shop Google Product Feed</title>" + line_feed;
+	xml = xml + "    <link>https://" + storefront_domain.xmlEncode() + "/</link>" + line_feed;
+	xml = xml + "    <description>Google Merchant Center product feed for Synkron Shop</description>" + line_feed;
 
 	/*
 	 * Zoho Commerce supports up to 200 products per page. This Flow version
@@ -56,7 +59,9 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 		products_url = products_url + "?filter_by=Status.Active";
 		products_url = products_url + "&sort_column=name";
 		products_url = products_url + "&sort_order=A";
-		products_url = products_url + "&page_start_from=" + page_number;
+		/* page_start_from is a record offset, not a page number. */
+		page_start_from = ((page_number - 1) * 200) + 1;
+		products_url = products_url + "&page_start_from=" + page_start_from;
 		products_url = products_url + "&per_page=200";
 
 		products_response = invokeurl
@@ -118,8 +123,10 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 					description = product_name;
 				}
 
-				/* Remove markup, decode HTML entities, and enforce Google's limit. */
+				/* Remove markup, decode HTML entities, and normalize whitespace. */
 				description = description.replaceAll("<[^>]*>"," ",false).htmlDecode().trim();
+				description = description.replaceAll(line_feed," ",true).replaceAll(carriage_return," ",true);
+				description = description.replaceAll(hexToText("09")," ",true).replaceAll(" +"," ",false).trim();
 
 				if(description.length() > 5000)
 				{
@@ -264,44 +271,44 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 						mpn = mpn.left(70);
 					}
 
-					xml = xml + "    <item>\n";
-					xml = xml + "      <g:id>" + offer_id.xmlEncode() + "</g:id>\n";
-					xml = xml + "      <g:title>" + offer_title.xmlEncode() + "</g:title>\n";
-					xml = xml + "      <g:description>" + description.xmlEncode() + "</g:description>\n";
-					xml = xml + "      <g:link>" + product_link.xmlEncode() + "</g:link>\n";
-					xml = xml + "      <g:image_link>" + image_link.xmlEncode() + "</g:image_link>\n";
-					xml = xml + "      <g:availability>" + availability + "</g:availability>\n";
-					xml = xml + "      <g:condition>new</g:condition>\n";
-					xml = xml + "      <g:price>" + normal_price + " " + currency_code + "</g:price>\n";
+					xml = xml + "    <item>" + line_feed;
+					xml = xml + "      <g:id>" + offer_id.xmlEncode() + "</g:id>" + line_feed;
+					xml = xml + "      <g:title>" + offer_title.xmlEncode() + "</g:title>" + line_feed;
+					xml = xml + "      <g:description>" + description.xmlEncode() + "</g:description>" + line_feed;
+					xml = xml + "      <g:link>" + product_link.xmlEncode() + "</g:link>" + line_feed;
+					xml = xml + "      <g:image_link>" + image_link.xmlEncode() + "</g:image_link>" + line_feed;
+					xml = xml + "      <g:availability>" + availability + "</g:availability>" + line_feed;
+					xml = xml + "      <g:condition>new</g:condition>" + line_feed;
+					xml = xml + "      <g:price>" + normal_price + " " + currency_code + "</g:price>" + line_feed;
 
 					if(sale_price > 0)
 					{
-						xml = xml + "      <g:sale_price>" + sale_price + " " + currency_code + "</g:sale_price>\n";
+						xml = xml + "      <g:sale_price>" + sale_price + " " + currency_code + "</g:sale_price>" + line_feed;
 					}
 
 					if(ifNull(product.get("has_variant"),false) == true)
 					{
-						xml = xml + "      <g:item_group_id>" + product_id.xmlEncode() + "</g:item_group_id>\n";
+						xml = xml + "      <g:item_group_id>" + product_id.xmlEncode() + "</g:item_group_id>" + line_feed;
 					}
 
 					if(brand != "")
 					{
-						xml = xml + "      <g:brand>" + brand.xmlEncode() + "</g:brand>\n";
+						xml = xml + "      <g:brand>" + brand.xmlEncode() + "</g:brand>" + line_feed;
 					}
 
 					if(gtin != "")
 					{
-						xml = xml + "      <g:gtin>" + gtin.xmlEncode() + "</g:gtin>\n";
+						xml = xml + "      <g:gtin>" + gtin.xmlEncode() + "</g:gtin>" + line_feed;
 					}
 
 					if(mpn != "")
 					{
-						xml = xml + "      <g:mpn>" + mpn.xmlEncode() + "</g:mpn>\n";
+						xml = xml + "      <g:mpn>" + mpn.xmlEncode() + "</g:mpn>" + line_feed;
 					}
 
 					if(brand == "" && gtin == "" && mpn == "")
 					{
-						xml = xml + "      <g:identifier_exists>no</g:identifier_exists>\n";
+						xml = xml + "      <g:identifier_exists>no</g:identifier_exists>" + line_feed;
 					}
 
 					attribute_names = List();
@@ -323,17 +330,17 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 						{
 							if(attribute_name.contains("color") || attribute_name.contains("colour"))
 							{
-								xml = xml + "      <g:color>" + attribute_value.xmlEncode() + "</g:color>\n";
+								xml = xml + "      <g:color>" + attribute_value.xmlEncode() + "</g:color>" + line_feed;
 							}
 
 							if(attribute_name.contains("size"))
 							{
-								xml = xml + "      <g:size>" + attribute_value.xmlEncode() + "</g:size>\n";
+								xml = xml + "      <g:size>" + attribute_value.xmlEncode() + "</g:size>" + line_feed;
 							}
 						}
 					}
 
-					xml = xml + "    </item>\n";
+					xml = xml + "    </item>" + line_feed;
 					item_count = item_count + 1;
 				}
 			}
@@ -347,8 +354,8 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 		}
 	}
 
-	xml = xml + "  </channel>\n";
-	xml = xml + "</rss>\n";
+	xml = xml + "  </channel>" + line_feed;
+	xml = xml + "</rss>" + line_feed;
 
 	if(item_count == 0)
 	{
@@ -382,7 +389,7 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 		existing_content = ifNull(existing_file.get("content"),"").toString();
 	}
 
-	existing_content = existing_content.replaceAll("\n","",true).replaceAll("\r","",true);
+	existing_content = existing_content.replaceAll(line_feed,"",true).replaceAll(carriage_return,"",true);
 	encoded_xml = zoho.encryption.base64Encode(xml,"UTF-8");
 
 	if(existing_sha != "" && existing_content == encoded_xml)
