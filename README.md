@@ -61,13 +61,16 @@ Never commit the token or an organization credential to this repository.
 
 ## 2. Install the custom function
 
-In `deluge/generate_synkron_google_feed.dg`, replace these two quoted values with
-the connection link names from Zoho Flow:
+The checked-in function is configured with these Zoho Flow connection link
+names:
 
 ```text
-REPLACE_WITH_ZOHO_COMMERCE_CONNECTION_LINK_NAME
-REPLACE_WITH_GITHUB_CONNECTION_LINK_NAME
+synkron_commerce_product_feed
+synkron_github_merchant_feed
 ```
+
+If the connections are renamed in Zoho Flow, update all matching `connection`
+entries in the Deluge source before pasting it into the function editor.
 
 In the Flow builder, create a custom function named
 `generate_synkron_google_feed` with return type **Map** and these inputs:

@@ -69,7 +69,7 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 			url : products_url
 			type : GET
 			headers : commerce_headers
-			connection : "REPLACE_WITH_ZOHO_COMMERCE_CONNECTION_LINK_NAME"
+			connection : "synkron_commerce_product_feed"
 		];
 
 		if(products_response == null || ifNull(products_response.get("code"),-1) != 0)
@@ -377,7 +377,7 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 		url : github_api_url + "?ref=" + github_branch
 		type : GET
 		headers : github_headers
-		connection : "REPLACE_WITH_GITHUB_CONNECTION_LINK_NAME"
+		connection : "synkron_github_merchant_feed"
 	];
 
 	existing_sha = "";
@@ -419,7 +419,7 @@ map generate_synkron_google_feed(string commerce_api_base, string organization_i
 		type : PUT
 		headers : github_headers
 		body : github_payload.toString()
-		connection : "REPLACE_WITH_GITHUB_CONNECTION_LINK_NAME"
+		connection : "synkron_github_merchant_feed"
 		detailed : true
 	];
 
