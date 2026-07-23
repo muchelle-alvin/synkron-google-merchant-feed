@@ -1,1 +1,1 @@
-{"schema_version":1,"run_id":"20260722165701","batch_number":2,"requested_page":2,"products_received":200,"items_written":0,"items_skipped":200,"duplicates_skipped":0,"has_more_page":true,"page_marker":"244649000049541044","offer_ids":[],"items_base64":""}
+{"schema_version":2,"run_id":"20260723090539","batch_number":2,"requested_page":2,"currency_code":"USD","exchange_rate":"129.533679","products_received":200,"items_written":0,"items_skipped":200,"duplicates_skipped":0,"has_more_page":true,"page_marker":"244649000049541044","offer_ids":[],"items_base64":""}
