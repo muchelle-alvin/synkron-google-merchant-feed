@@ -28,4 +28,4 @@ jobs:
       - name: Run validator tests
         run: python3 -m unittest discover -s tests -v
       - name: Validate feed
-        run: python3 scripts/validate_feed.py --allow-empty synkron-google-products.xml
+        run: python3 scripts/validate_feed.py --allow-empty --currency USD synkron-google-products.xml

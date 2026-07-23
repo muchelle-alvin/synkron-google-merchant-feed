@@ -46,6 +46,10 @@ visibility. At 200 products per response, the current catalog therefore needs
 10 batch actions. The exported CSV is ignored by Git because it contains catalog
 data and is only a local planning input.
 
+The current Google-eligible count is lower than 957 because physical products
+with a zero price or no default image are intentionally excluded. The latest
+complete KES run produced 642 valid offers.
+
 ## 1. Create the two Zoho Flow connections
 
 ### Zoho Commerce
@@ -98,7 +102,7 @@ Create these inputs in the same order as the function declaration:
 | `commerce_api_base` | String | `https://commerce.zoho.com` |
 | `organization_id` | String | Synkron Commerce organization ID |
 | `storefront_domain` | String | Published shop hostname, without `https://` or trailing slash |
-| `currency_code` | String | `KES` |
+| `currency_code` | String | `USD` |
 | `github_owner` | String | `muchelle-alvin` |
 | `github_repo` | String | `synkron-google-merchant-feed` |
 | `github_branch` | String | `main` |
@@ -117,6 +121,16 @@ The function sends `page=1` through `page=10`, matching Commerce's pagination
 contract, and verifies `page_context.page` before staging the response. This is
 the guard that prevents the previously repeated first page from being
 published.
+
+`currency_code` is the feed's target currency, not the Commerce base currency.
+Product rates remain stored and returned in KES. For every batch, the function
+reads the storefront's public `/store-user/api/v1/currency/meta` response and
+divides the KES price by Zoho's current KES-per-USD exchange rate. Prices are
+rounded to two decimals. The staged rate is validated across all ten batches,
+so a rate change during a run aborts publication instead of mixing prices.
+
+Set `currency_code` to `USD` in **all ten** batch actions. No exchange-rate
+input or separate rate service is required.
 
 ## 3. Install the publisher custom function
 
@@ -161,15 +175,19 @@ A healthy final publisher response resembles:
 ```text
 status: success
 batches_published: 10
-products_received: 1918
-items_written: approximately 957 (plus any eligible extra variants)
+products_received: approximately 1924
+items_written: approximately 642
+currency_code: USD
+exchange_rate: current Zoho KES-per-USD rate
 feed_url: https://raw.githubusercontent.com/muchelle-alvin/synkron-google-merchant-feed/main/synkron-google-products.xml
 ```
 
 The exact item count can differ from the CSV after catalog changes or when one
 product has multiple eligible variants. If any batch returns a status other
 than `success`, the publisher will abort without overwriting the feed; inspect
-that action's returned `requested_page`, `returned_page`, and message.
+that action's returned `requested_page`, `returned_page`, and message. The
+publisher also rejects a skipped page after `has_more_page: true` and rejects
+batches that use different exchange rates.
 
 ## 5. Configure Google Merchant Center
 
@@ -204,7 +222,7 @@ each run, so the repository does not accumulate an unbounded number of files.
 Validate locally with:
 
 ```bash
-python3 scripts/validate_feed.py synkron-google-products.xml
+python3 scripts/validate_feed.py --currency USD synkron-google-products.xml
 python3 -m unittest discover -s tests -v
 ```
 
@@ -212,7 +230,9 @@ python3 -m unittest discover -s tests -v
 
 - [Zoho Commerce: pagination](https://www.zoho.com/commerce/api/pagination.html)
 - [Zoho Commerce: list all products](https://www.zoho.com/commerce/api/list-all-products.html)
+- [Zoho Commerce: currencies](https://help.zoho.com/portal/en/kb/commerce/user-guide/settings/general-settings/articles/currencies)
 - [Zoho Flow: create a flow](https://help.zoho.com/portal/en/kb/flow/user-guide/create-a-flow/articles/create-a-flow-from-scratch)
 - [Zoho Deluge: `invokeURL`](https://www.zoho.com/deluge/help/webhook/invokeurl-api-task.html)
 - [GitHub: repository contents API](https://docs.github.com/en/rest/repos/contents)
 - [Google Merchant Center: RSS 2.0 specification](https://support.google.com/merchants/answer/14987622?hl=en)
+- [Google Merchant Center: price requirements](https://support.google.com/merchants/answer/6324371?hl=en)

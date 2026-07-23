@@ -24,6 +24,14 @@ class DelugeContractTests(unittest.TestCase):
         self.assertIn("seen_page_markers.containKey(page_marker)", PUBLISH_SOURCE)
         self.assertIn("seen_offer_ids.containKey(staged_offer_id)", PUBLISH_SOURCE)
         self.assertIn("last_has_more_page == true", PUBLISH_SOURCE)
+        self.assertIn("previous_has_more_page == true", PUBLISH_SOURCE)
+
+    def test_currency_is_converted_with_zoho_storefront_rate(self) -> None:
+        self.assertIn("/store-user/api/v1/currency/meta", BATCH_SOURCE)
+        self.assertIn("rate / currency_exchange_rate", BATCH_SOURCE)
+        self.assertIn(".round(currency_price_precision)", BATCH_SOURCE)
+        self.assertIn("batch_currency_mismatch", PUBLISH_SOURCE)
+        self.assertIn('batch_document.put("exchange_rate"', BATCH_SOURCE)
 
     def test_connections_are_referenced_by_link_name(self) -> None:
         self.assertIn('connection : "synkron_commerce_product_feed"', BATCH_SOURCE)

@@ -38,7 +38,12 @@ def _valid_web_url(value: str) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
-def validate_feed(path: Path, *, allow_empty: bool = False) -> tuple[int, list[str]]:
+def validate_feed(
+    path: Path,
+    *,
+    allow_empty: bool = False,
+    expected_currency: str | None = None,
+) -> tuple[int, list[str]]:
     errors: list[str] = []
 
     try:
@@ -107,6 +112,12 @@ def validate_feed(path: Path, *, allow_empty: bool = False) -> tuple[int, list[s
             if not match:
                 errors.append(f"{prefix}: <g:{name}> must be a number and ISO currency")
                 continue
+            if expected_currency and match.group(2) != expected_currency:
+                errors.append(
+                    f"{prefix}: <g:{name}> must use {expected_currency}, not {match.group(2)}"
+                )
+            if "." in match.group(1) and len(match.group(1).split(".", 1)[1]) > 2:
+                errors.append(f"{prefix}: <g:{name}> exceeds two fractional digits")
             try:
                 if Decimal(match.group(1)) <= 0:
                     errors.append(f"{prefix}: <g:{name}> must be greater than zero")
@@ -124,9 +135,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="allow the initial seed feed to contain no product items",
     )
+    parser.add_argument(
+        "--currency",
+        dest="expected_currency",
+        help="require every price and sale price to use this ISO currency",
+    )
     args = parser.parse_args(argv)
 
-    item_count, errors = validate_feed(args.feed, allow_empty=args.allow_empty)
+    item_count, errors = validate_feed(
+        args.feed,
+        allow_empty=args.allow_empty,
+        expected_currency=args.expected_currency,
+    )
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)

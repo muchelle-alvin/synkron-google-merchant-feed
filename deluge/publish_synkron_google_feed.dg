@@ -7,6 +7,8 @@ map publish_synkron_google_feed(string storefront_domain, string github_owner, s
 	products_received = 0;
 	seen_page_markers = Map();
 	seen_offer_ids = Map();
+	published_currency_code = "";
+	published_exchange_rate = "";
 
 	storefront_domain = storefront_domain.trim();
 	github_owner = github_owner.trim();
@@ -44,6 +46,7 @@ map publish_synkron_google_feed(string storefront_domain, string github_owner, s
 	github_headers.put("X-GitHub-Api-Version","2026-03-10");
 	batch_numbers = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20};
 	last_has_more_page = false;
+	previous_has_more_page = false;
 
 	for each batch_number in batch_numbers
 	{
@@ -83,14 +86,51 @@ map publish_synkron_google_feed(string storefront_domain, string github_owner, s
 		batch_document = batch_json.toMap();
 		batch_run_id = ifNull(batch_document.get("run_id"),"").toString();
 		staged_batch_number = ifNull(batch_document.get("batch_number"),0).toLong();
+		batch_schema_version = ifNull(batch_document.get("schema_version"),0).toLong();
 
-		if(batch_run_id != run_id || staged_batch_number != batch_number)
+		if(batch_run_id != run_id || staged_batch_number != batch_number || batch_schema_version != 2)
 		{
 			result.put("status","batch_run_mismatch");
 			result.put("batch_number",batch_number);
 			result.put("expected_run_id",run_id);
 			result.put("actual_run_id",batch_run_id);
 			result.put("message","Staged batches came from different runs. The existing feed was not overwritten.");
+			return result;
+		}
+
+		batch_currency_code = ifNull(batch_document.get("currency_code"),"").toString();
+		batch_exchange_rate = ifNull(batch_document.get("exchange_rate"),"").toString();
+
+		if(batch_currency_code == "" || batch_exchange_rate == "")
+		{
+			result.put("status","batch_currency_missing");
+			result.put("batch_number",batch_number);
+			result.put("message","A staged batch has no currency metadata. The existing feed was not overwritten.");
+			return result;
+		}
+
+		if(published_currency_code == "")
+		{
+			published_currency_code = batch_currency_code;
+			published_exchange_rate = batch_exchange_rate;
+		}
+		else if(batch_currency_code != published_currency_code || batch_exchange_rate != published_exchange_rate)
+		{
+			result.put("status","batch_currency_mismatch");
+			result.put("batch_number",batch_number);
+			result.put("expected_currency_code",published_currency_code);
+			result.put("actual_currency_code",batch_currency_code);
+			result.put("message","Staged batches used different currencies or exchange rates. The existing feed was not overwritten.");
+			return result;
+		}
+
+		batch_products_received = ifNull(batch_document.get("products_received"),0).toLong();
+
+		if(batch_number > 1 && previous_has_more_page == true && batch_products_received == 0)
+		{
+			result.put("status","batch_sequence_incomplete");
+			result.put("batch_number",batch_number);
+			result.put("message","The preceding batch reported another page, but this batch fetched no products. The existing feed was not overwritten.");
 			return result;
 		}
 
@@ -146,13 +186,15 @@ map publish_synkron_google_feed(string storefront_domain, string github_owner, s
 		item_count = item_count + ifNull(batch_document.get("items_written"),0).toLong();
 		skipped_count = skipped_count + ifNull(batch_document.get("items_skipped"),0).toLong();
 		duplicate_count = duplicate_count + ifNull(batch_document.get("duplicates_skipped"),0).toLong();
-		products_received = products_received + ifNull(batch_document.get("products_received"),0).toLong();
+		products_received = products_received + batch_products_received;
 		last_has_more_page = false;
 
 		if(ifNull(batch_document.get("has_more_page"),false).toString().toLowerCase() == "true")
 		{
 			last_has_more_page = true;
 		}
+
+		previous_has_more_page = last_has_more_page;
 	}
 
 	if(last_has_more_page == true)
@@ -227,6 +269,8 @@ map publish_synkron_google_feed(string storefront_domain, string github_owner, s
 	result.put("items_written",item_count);
 	result.put("items_skipped",skipped_count);
 	result.put("duplicates_skipped",duplicate_count);
+	result.put("currency_code",published_currency_code);
+	result.put("exchange_rate",published_exchange_rate);
 	result.put("feed_url",feed_url);
 	result.put("github_response_code",response_code);
 	return result;

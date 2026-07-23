@@ -29,11 +29,21 @@ VALID_FEED = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 class FeedValidationTests(unittest.TestCase):
-    def validate(self, content: str, *, allow_empty: bool = False) -> tuple[int, list[str]]:
+    def validate(
+        self,
+        content: str,
+        *,
+        allow_empty: bool = False,
+        expected_currency: str | None = None,
+    ) -> tuple[int, list[str]]:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "feed.xml"
             path.write_text(content, encoding="utf-8")
-            return validate_feed(path, allow_empty=allow_empty)
+            return validate_feed(
+                path,
+                allow_empty=allow_empty,
+                expected_currency=expected_currency,
+            )
 
     def test_accepts_valid_feed(self) -> None:
         count, errors = self.validate(VALID_FEED)
@@ -65,6 +75,14 @@ class FeedValidationTests(unittest.TestCase):
         count, errors = self.validate("<rss>")
         self.assertEqual(count, 0)
         self.assertTrue(errors[0].startswith("cannot parse"))
+
+    def test_requires_configured_currency_and_at_most_two_decimals(self) -> None:
+        _, errors = self.validate(VALID_FEED, expected_currency="USD")
+        self.assertTrue(any("must use USD, not KES" in error for error in errors))
+
+        usd_with_extra_precision = VALID_FEED.replace("1200 KES", "9.999 USD")
+        _, errors = self.validate(usd_with_extra_precision, expected_currency="USD")
+        self.assertTrue(any("exceeds two fractional digits" in error for error in errors))
 
 
 if __name__ == "__main__":

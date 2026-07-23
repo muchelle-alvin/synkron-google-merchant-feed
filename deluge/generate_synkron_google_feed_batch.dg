@@ -56,6 +56,77 @@ map generate_synkron_google_feed_batch(string commerce_api_base, string organiza
 	items_xml = "";
 	batch_size = 200;
 	requested_page = batch_number;
+	currency_exchange_rate_text = "";
+	currency_exchange_rate = 0;
+	currency_price_precision = 2;
+	currency_found = false;
+
+	/*
+	 * Product rates are returned in the Commerce base currency. Resolve the
+	 * storefront's current target-currency rate so feed and landing-page prices
+	 * use the same Zoho conversion. The rate is base-currency units per target
+	 * unit, so KES prices are divided by the KES-per-USD rate.
+	 */
+	currency_response = invokeurl
+	[
+		url : "https://" + storefront_domain + "/store-user/api/v1/currency/meta"
+		type : GET
+	];
+
+	if(currency_response == null || ifNull(currency_response.get("status_code"),"1").toString() != "0")
+	{
+		result.put("status","currency_api_failed");
+		result.put("response",currency_response);
+		result.put("message","Zoho storefront currency metadata could not be loaded. The existing feed was not overwritten.");
+		return result;
+	}
+
+	currency_options = currency_response.get("data");
+
+	if(currency_options != null)
+	{
+		for each currency_option in currency_options
+		{
+			option_currency_code = ifNull(currency_option.get("currency_code"),"").toString().toUpperCase();
+
+			if(option_currency_code == currency_code)
+			{
+				currency_found = true;
+				currency_price_precision = ifNull(currency_option.get("price_precision"),2).toLong();
+				is_base_currency = ifNull(currency_option.get("is_base_currency"),false).toString().toLowerCase() == "true";
+
+				if(is_base_currency == true)
+				{
+					currency_exchange_rate_text = "1";
+					currency_exchange_rate = 1;
+				}
+				else
+				{
+					currency_exchange_rate_text = ifNull(currency_option.get("exchange_rate"),"").toString().trim();
+
+					if(currency_exchange_rate_text != "")
+					{
+						currency_exchange_rate = currency_exchange_rate_text.toDecimal();
+					}
+				}
+				break;
+			}
+		}
+	}
+
+	if(currency_found == false || currency_exchange_rate <= 0)
+	{
+		result.put("status","currency_not_available");
+		result.put("currency_code",currency_code);
+		result.put("message","The target currency is not enabled with a positive exchange rate in the Zoho storefront. The existing feed was not overwritten.");
+		return result;
+	}
+
+	/* Google accepts no more than two fractional digits for prices. */
+	if(currency_price_precision < 0 || currency_price_precision > 2)
+	{
+		currency_price_precision = 2;
+	}
 
 	if(should_fetch == true)
 	{
@@ -254,13 +325,25 @@ map generate_synkron_google_feed_batch(string commerce_api_base, string organiza
 						label_rate = label_rate_text.toDecimal();
 					}
 
-					normal_price = rate;
+					normal_price = (rate / currency_exchange_rate).round(currency_price_precision);
 					sale_price = 0;
 
 					if(label_rate > rate && label_rate > 0)
 					{
-						normal_price = label_rate;
-						sale_price = rate;
+						converted_label_price = (label_rate / currency_exchange_rate).round(currency_price_precision);
+						converted_sale_price = (rate / currency_exchange_rate).round(currency_price_precision);
+
+						if(converted_label_price > converted_sale_price)
+						{
+							normal_price = converted_label_price;
+							sale_price = converted_sale_price;
+						}
+					}
+
+					if(normal_price <= 0)
+					{
+						skipped_count = skipped_count + 1;
+						continue;
 					}
 
 					gtin = ifNull(variant.get("ean"),"").toString().trim();
@@ -373,10 +456,12 @@ map generate_synkron_google_feed_batch(string commerce_api_base, string organiza
 	}
 
 	batch_document = Map();
-	batch_document.put("schema_version",1);
+	batch_document.put("schema_version",2);
 	batch_document.put("run_id",run_id);
 	batch_document.put("batch_number",batch_number);
 	batch_document.put("requested_page",requested_page);
+	batch_document.put("currency_code",currency_code);
+	batch_document.put("exchange_rate",currency_exchange_rate_text);
 	batch_document.put("products_received",products_received);
 	batch_document.put("items_written",item_count);
 	batch_document.put("items_skipped",skipped_count);
@@ -445,6 +530,8 @@ map generate_synkron_google_feed_batch(string commerce_api_base, string organiza
 	result.put("items_written",item_count);
 	result.put("items_skipped",skipped_count);
 	result.put("duplicates_skipped",duplicate_count);
+	result.put("currency_code",currency_code);
+	result.put("exchange_rate",currency_exchange_rate_text);
 	result.put("part_path",batch_path);
 	result.put("github_response_code",response_code);
 	return result;
